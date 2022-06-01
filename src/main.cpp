@@ -1,10 +1,16 @@
 #include <Arduino.h>
 #include <ETH.h>
 #include <SPI.h>
-//#include "Config/config.h"
 #include <HTTPClient.h>
 
 #include <WiFiUdp.h> 
+
+#include "mbedtls/aes.h"
+#include "SPIFFSTest.h"
+#include "Cipher.h"
+
+CSPIFFS mSpiffs;
+Cipher * cipher = new Cipher();
 
 /*
  * ETH_CLOCK_GPIO0_IN   - default: external clock from crystal oscillator
@@ -12,6 +18,7 @@
  * ETH_CLOCK_GPIO16_OUT - 50MHz clock from internal APLL output on GPIO16 - possibly an inverter is needed for LAN8720
  * ETH_CLOCK_GPIO17_OUT - 50MHz clock from internal APLL inverted output on GPIO17 - tested with LAN8720
  */
+
 #define ETH_CLK_MODE ETH_CLOCK_GPIO17_OUT
 
 // Pin# of the enable signal for the external crystal oscillator (-1 to disable for internal APLL source)
@@ -36,6 +43,12 @@ static bool eth_done = false;
 
 WiFiUDP Udp;                      // create UDP object
 unsigned int localUdpPort = 2333; // Local port number
+
+IPAddress local_ip(192,168,0,145);
+IPAddress gateway(192,168,0,1);
+IPAddress subnet(255,255,255,0);
+IPAddress dns1(8,8,8,8);
+IPAddress dns2 = (uint32_t)0x00000000;
 
 void WiFiEvent(WiFiEvent_t event)
 {
@@ -120,21 +133,65 @@ void setup()
   pinMode(ETH_POWER_PIN, OUTPUT);
   digitalWrite(ETH_POWER_PIN, 1);
 
+
+  char * key = "abcdefghijklmnop";
+  String plainText = "Tech tutorials xTech tutorials xxyzgvszufsdgftzsdfgsdfzfsfdzfsdzfsdtzfdtzsfdtzsfdtzfsdtzfstzfzsfdfzs";
+
+  Serial.print("\nSetting cipher key: ");
+  Serial.println(key);
+  cipher->setKey(key);
+
+  Serial.println("\nOriginal plain text:");
+  Serial.println(plainText);
+
+  Serial.println("\nCiphered text:");
+  String text = cipher->encryptString(plainText);
+  Serial.println(text);
+
+  Serial.println("\nDeciphered text:");
+  Serial.println(cipher->decryptString(text));
+
+
+  delay(2000);
+
   WiFi.onEvent(WiFiEvent);
   ETH_test();
+
+  ETH.config(local_ip, gateway, subnet, dns1, dns2); // Static IP, leave without this line to get IP via DHCP
   Udp.begin(localUdpPort); // Enable UDP listening to receive data
+
+  
 
 }
 
+#define stream
+//#define debug
+
+#define UDP2UART
+//#define UART2UDP
+
+//#define ENCRYPT
+
+bool flagToSend=false;
+int packetSize=1300;
+long timeoutPackage=100; //ms
+long counterPackage=millis();
+char buf[1500];
+int counter=0;
+
 void loop()
 {
+
+#ifdef UDP2UART
+
   int packetSize = Udp.parsePacket(); // Get the current team header packet length
   if (packetSize)                     // If data is available
   {
     char buf[packetSize];
-   // Udp.read(buf, packetSize); // Read the current packet data
-    Udp.readBytes(buf,packetSize);
+    Udp.read(buf, packetSize); // Read the current packet data
+    //Udp.readBytes(buf,packetSize);
 
+  #ifdef debug
     Serial.println();
     Serial.print("Received: ");
     Serial.println(buf);
@@ -145,7 +202,27 @@ void loop()
     Serial.print("From Port: ");
     Serial.println(Udp.remotePort());
 
-    //Serial.print(buf);
+    //cipher->setKey(key);
+    String text = cipher->encryptString(buf);
+    Serial.println("\n Ciphered text:");
+    Serial.print(text);
+    Serial.println("\n Deciphered text:");
+    Serial.println(cipher->decryptString(text));
+    //Serial.print(plainText);
+
+  #endif
+
+  #ifdef stream
+
+    #ifdef ENCRYPT
+    String text = cipher->encryptString(buf);
+    Serial.print(text);
+    #endif
+    #ifndef ENCRYPT
+    Serial.print(buf);
+    #endif
+
+  #endif
 
     /*
     //Udp.beginPacket(Udp.remoteIP(), Udp.remotePort()); // Ready to send data
@@ -156,4 +233,33 @@ void loop()
     */
 
   }
+
+#endif
+
+#ifdef UART2UDP
+  if (Serial.available()>0){
+    
+    counterPackage=millis();
+    counter=0;
+
+    while(millis()-counterPackage<timeoutPackage){ // set package timeout for 100m    
+      if(Serial.available()){
+        buf[counter++]=Serial.read();
+      }
+      if (counter>=packetSize) break;
+    }
+    flagToSend=true;
+    
+  }
+
+  if(flagToSend){
+    Udp.beginPacket("192.168.0.200", 2222); // Ready to send data
+    Udp.write((const uint8_t*)buf, counter);   // Copy data to send buffer
+    Udp.endPacket();
+    flagToSend=false;
+    counter=0;
+  }                        // send data
+
+#endif
+
 }
